@@ -417,7 +417,8 @@ class App((TkinterDnD.Tk if DND_AVAILABLE else tk.Tk)):
         # Status line re: DnD
         status = ttk.Label(
             frm,
-            text=("Drag & drop: enabled" if DND_AVAILABLE else "Drag & drop: install 'tkinterdnd2' to enable"),
+            #text=("Drag & drop: enabled" if DND_AVAILABLE else "Drag & drop: install 'tkinterdnd2' to enable"),
+            text=(""),
             foreground=("#10b981" if DND_AVAILABLE else "#b45309")
         )
         status.grid(row=11, column=0, columnspan=3, sticky="w", pady=(6,0))
