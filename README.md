@@ -14,3 +14,6 @@ pip install tkinterdnd2
 ```
 
 There's a blender-render.bat file for windows, adjust to your conda env name, (default "base")
+
+
+![alt text](https://github.com/carlitoselmago/blender-render/blob/main/assets/blender-render.jpg?raw=true)
