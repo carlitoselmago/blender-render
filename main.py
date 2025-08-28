@@ -28,7 +28,6 @@ def find_default_blender():
         p = shutil.which(cand)
         if p:
             return p
-    # Fallback to name; subprocess will resolve via PATH
     return "blender.exe" if os.name == "nt" else "blender"
 
 def kill_all_blender(log_fn=None):
@@ -48,7 +47,7 @@ def kill_all_blender(log_fn=None):
 
 
 # =========================
-# Render helpers
+# Render + scan helpers
 # =========================
 
 def run_capture(cmd):
@@ -86,22 +85,51 @@ def get_blend_frame_range(blender_exe, blend_path):
             raise RuntimeError(f"Could not parse frame range for {blend_path}.\n{out}\n{out2}")
     return int(m.group(1)), int(m.group(2))
 
-def get_max_rendered_frame(render_dir: Path):
-    """Return max numeric frame index present in render_dir or -1 if none."""
+def get_existing_frames(render_dir: Path):
+    """Return a set of frame numbers present in render_dir by parsing trailing digits in filenames."""
+    frames = set()
     if not render_dir.exists():
-        return -1
-    max_n = -1
+        return frames
     for p in render_dir.iterdir():
         if p.is_file():
             m = re.search(r'(\d+)$', p.stem) or re.search(r'(\d+)', p.stem)
             if m:
                 try:
-                    n = int(m.group(1))
-                    if n > max_n:
-                        max_n = n
+                    frames.add(int(m.group(1)))
                 except ValueError:
                     pass
-    return max_n
+    return frames
+
+def contiguous_ranges(sorted_frames):
+    """Given a sorted list of integers, yield (start, end) contiguous ranges."""
+    if not sorted_frames:
+        return
+    start = prev = sorted_frames[0]
+    for x in sorted_frames[1:]:
+        if x == prev + 1:
+            prev = x
+            continue
+        yield (start, prev)
+        start = prev = x
+    yield (start, prev)
+
+def split_ranges_by_chunk(ranges, chunk_size):
+    """Split (start,end) ranges into chunks of at most chunk_size."""
+    for a, b in ranges:
+        cur = a
+        while cur <= b:
+            yield (cur, min(cur + chunk_size - 1, b))
+            cur += chunk_size
+
+def format_ranges(ranges, max_show=10):
+    """Human-readable ranges, e.g., '100–120, 127, 130–135' (limit for log neatness)."""
+    parts = []
+    for i, (a, b) in enumerate(ranges):
+        if i >= max_show:
+            parts.append("…")
+            break
+        parts.append(str(a) if a == b else f"{a}–{b}")
+    return ", ".join(parts)
 
 def render_chunk(
     blender_exe,
@@ -121,19 +149,18 @@ def render_chunk(
     render_dir = Path(render_dir)
     render_dir.mkdir(parents=True, exist_ok=True)
 
-    args = [
-        str(blender_exe),
-        "-b", str(blend_path),
+    # IMPORTANT: load the .blend FIRST, then the text block (so Blender can find it)
+    args = [str(blender_exe), "-b", str(blend_path)]
+    #args = [str(blender_exe),  str(blend_path)]
+    if run_script and script_name.strip():
+        args += ["--enable-autoexec", "--python-text", script_name.strip()]
+    args += [
         "-s", str(start),
         "-e", str(end),
         "-o", str(render_dir / "####"),
         "-x", "1",
         "-a",
     ]
-
-    # Only add autoexec + python-text if requested
-    if run_script and script_name.strip():
-        args[2:2] = ["--enable-autoexec", "--python-text", script_name.strip()]
 
     if log_cb:
         log_cb(f"[CMD] {' '.join(args)}\n")
@@ -178,20 +205,19 @@ def render_chunk(
     if code != 0:
         raise RuntimeError(f"Blender exited with code {code} for chunk {start}-{end}.")
 
-    # Fallback in case the last 'Saved:' line was missed
     if progress_cb and last_completed is None:
         progress_cb(end, scene_start, scene_end)
 
 
 # =========================
-# Worker thread
+# Worker thread (renders only missing frames)
 # =========================
 
 class RenderWorker(threading.Thread):
     def __init__(self, blender_exe, files, out_root, chunk_size, run_script, script_name,
                  log_queue, progress_queue, stop_flag):
         super().__init__(daemon=True)
-        self.blender_exe = blender_exe  # keep as string/path
+        self.blender_exe = blender_exe
         self.files = [Path(f) for f in files]
         self.out_root = Path(out_root)
         self.chunk_size = int(chunk_size)
@@ -223,6 +249,7 @@ class RenderWorker(threading.Thread):
                 self.log(f"\n=== {blend_path.name} ===")
                 self.log(f"Output: {render_dir}")
 
+                # Scene frame range
                 try:
                     s_start, s_end = get_blend_frame_range(self.blender_exe, blend_path)
                 except Exception as e:
@@ -232,29 +259,40 @@ class RenderWorker(threading.Thread):
                 self.set_progress(blend_path.name, s_start, s_end, s_start)
                 self.log(f"Scene frames: {s_start}..{s_end}")
 
-                max_done = get_max_rendered_frame(render_dir)
-                if max_done >= s_end:
-                    self.log(f"Already complete (max {max_done} ≥ end {s_end}). Skipping.")
+                # Determine missing frames
+                existing = get_existing_frames(render_dir)
+                all_frames = list(range(s_start, s_end + 1))
+                missing_frames = [f for f in all_frames if f not in existing]
+
+                if not missing_frames:
+                    self.log("No missing frames. Skipping.")
                     self.set_progress(blend_path.name, s_start, s_end, s_end)
                     continue
 
-                start = max(max_done + 1, s_start) if max_done >= s_start else s_start
-                self.log(f"Resuming at: {start}")
-                self.set_progress(blend_path.name, s_start, s_end, start)
+                missing_frames.sort()
+                ranges = list(contiguous_ranges(missing_frames))
+                self.log(f"Missing frames: {len(missing_frames)}")
+                self.log(f"Ranges: {format_ranges(ranges)}")
 
-                current = start
-                while current <= s_end:
+                # Split ranges by chunk size
+                chunked_ranges = list(split_ranges_by_chunk(ranges, self.chunk_size))
+                self.log(f"Planned chunks: {format_ranges(chunked_ranges, max_show=20)}")
+
+                # Start progress at first missing frame
+                self.set_progress(blend_path.name, s_start, s_end, missing_frames[0])
+
+                # Render each chunk of missing frames
+                for (a, b) in chunked_ranges:
                     if self.stop_flag.is_set():
                         self.log("[STOP] Stop requested. Halting mid-file.")
                         return
-                    end = min(current + self.chunk_size - 1, s_end)
-                    self.log(f"Rendering chunk: {current}..{end}")
+                    self.log(f"Rendering missing chunk: {a}..{b}")
                     try:
                         render_chunk(
                             blender_exe=self.blender_exe,
                             blend_path=blend_path,
-                            start=current,
-                            end=end,
+                            start=a,
+                            end=b,
                             render_dir=render_dir,
                             run_script=self.run_script,
                             script_name=self.script_name,
@@ -266,11 +304,11 @@ class RenderWorker(threading.Thread):
                         )
                     except Exception as e:
                         self.log(f"[ERROR] {e}")
-                        break
+                        # continue to next chunk (maybe one frame was bad)
+                        continue
 
                     # Safety: ensure we land on the end of the chunk
-                    self.set_progress(blend_path.name, s_start, s_end, end)
-                    current = end + 1
+                    self.set_progress(blend_path.name, s_start, s_end, b)
 
                 self.log(f"Finished (or halted) for {blend_path.name}.")
             self.log("\nAll done (or stopped).")
@@ -285,8 +323,8 @@ class RenderWorker(threading.Thread):
 class App((TkinterDnD.Tk if DND_AVAILABLE else tk.Tk)):
     def __init__(self):
         super().__init__()
-        self.title("Blender Chunk Renderer")
-        self.geometry("930x760")
+        self.title("Blender Chunk Renderer (Missing-Frames Mode)")
+        self.geometry("930x780")
 
         # State
         self.files = []
