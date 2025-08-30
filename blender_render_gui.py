@@ -13,18 +13,33 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 # ---------------------------------------------------------------------
-# Make tkdnd visible in PyInstaller one-file builds (sets TKDND_LIBRARY)
+# tkdnd location (runtime + compiled)
 # ---------------------------------------------------------------------
 _MEI = getattr(sys, "_MEIPASS", None)
 if _MEI:
-    os.environ.setdefault("TKDND_LIBRARY", str(Path(_MEI) / "tkdnd"))
+    # In a frozen (PyInstaller) app, force TKDND_LIBRARY to the bundled folder
+    os.environ["TKDND_LIBRARY"] = str(Path(_MEI) / "tkdnd")
 
 # Drag & Drop (requires: pip install tkinterdnd2)
+DND_AVAILABLE = False
+DND_FILES = None
+BaseTk = tk.Tk  # fallback
+
 try:
-    from tkinterdnd2 import DND_FILES, TkinterDnD
+    import tkinterdnd2 as tkdnd2
+    from tkinterdnd2 import DND_FILES as _DND_FILES, TkinterDnD
+
+    # For source runs, if TKDND_LIBRARY not set, point to the package's tkdnd dir
+    if not _MEI and not os.environ.get("TKDND_LIBRARY"):
+        pkg_lib = Path(tkdnd2.__file__).parent / "tkdnd"
+        if pkg_lib.exists():
+            os.environ["TKDND_LIBRARY"] = str(pkg_lib)
+
+    DND_FILES = _DND_FILES
+    BaseTk = TkinterDnD.Tk  # <-- use DnD-aware root when available
     DND_AVAILABLE = True
 except Exception:
-    DND_AVAILABLE = False  # App still runs; only Add Files… works.
+    DND_AVAILABLE = False
 
 # -------------------------
 # Config path for settings
@@ -37,7 +52,6 @@ CONFIG_PATH = Path(__file__).with_name(".blender_render_gui.json")
 # =========================
 
 def find_default_blender():
-    """Return a sensible default blender executable from PATH."""
     for cand in ("blender", "blender.exe"):
         p = shutil.which(cand)
         if p:
@@ -45,7 +59,6 @@ def find_default_blender():
     return "blender.exe" if os.name == "nt" else "blender"
 
 def kill_all_blender(log_fn=None):
-    """Force-close all Blender instances (used on app exit)."""
     try:
         if os.name == "nt":
             subprocess.run(
@@ -60,7 +73,6 @@ def kill_all_blender(log_fn=None):
             log_fn(f"[WARN] Failed to kill Blender: {e}\n")
 
 def terminate_proc_tree(proc, log_fn=None):
-    """Immediately terminate a subprocess and its children cross-platform."""
     if not proc:
         return
     try:
@@ -85,12 +97,11 @@ def terminate_proc_tree(proc, log_fn=None):
             log_fn(f"[WARN] Failed to terminate process: {e}\n")
 
 def perform_shutdown(log_fn=None):
-    """Attempt to shut down the computer, cross-platform."""
     system = platform.system().lower()
     try:
         if "windows" in system:
             subprocess.Popen(["shutdown", "/s", "/t", "0"])
-        elif "darwin" in system:  # macOS
+        elif "darwin" in system:
             subprocess.Popen(["osascript", "-e", 'tell application "System Events" to shut down'])
         else:
             subprocess.Popen(["systemctl", "poweroff"])
@@ -106,7 +117,6 @@ def perform_shutdown(log_fn=None):
 # =========================
 
 def run_capture(cmd):
-    """Run command, capture combined stdout+stderr as text (utf-8 with replacement)."""
     proc = subprocess.run(
         cmd,
         stdout=subprocess.PIPE,
@@ -119,7 +129,6 @@ def run_capture(cmd):
     return proc.returncode, proc.stdout or ""
 
 def get_blend_frame_range(blender_exe, blend_path):
-    """Query Blender for active scene frame range."""
     cmd = [
         str(blender_exe), "-b", str(blend_path),
         "--python-expr",
@@ -141,7 +150,6 @@ def get_blend_frame_range(blender_exe, blend_path):
     return int(m.group(1)), int(m.group(2))
 
 def get_existing_frames(render_dir: Path):
-    """Return a set of frame numbers present in render_dir by parsing trailing digits in filenames."""
     frames = set()
     if not render_dir.exists():
         return frames
@@ -156,7 +164,6 @@ def get_existing_frames(render_dir: Path):
     return frames
 
 def contiguous_ranges(sorted_frames):
-    """Given a sorted list of integers, yield (start, end) contiguous ranges."""
     if not sorted_frames:
         return
     start = prev = sorted_frames[0]
@@ -169,7 +176,6 @@ def contiguous_ranges(sorted_frames):
     yield (start, prev)
 
 def split_ranges_by_chunk(ranges, chunk_size):
-    """Split (start,end) ranges into chunks of at most chunk_size."""
     for a, b in ranges:
         cur = a
         while cur <= b:
@@ -177,7 +183,6 @@ def split_ranges_by_chunk(ranges, chunk_size):
             cur += chunk_size
 
 def format_ranges(ranges, max_show=10):
-    """Human-readable ranges, e.g., '100–120, 127, 130–135' (limit for log neatness)."""
     parts = []
     for i, (a, b) in enumerate(ranges):
         if i >= max_show:
@@ -199,13 +204,11 @@ def render_chunk(
     scene_start=None,
     scene_end=None,
     progress_cb=None,
-    current_proc_holder=None,  # allows external immediate stop
+    current_proc_holder=None,
 ):
-    """Render frames [start..end] as a fresh Blender process, streaming logs and per-frame completion."""
     render_dir = Path(render_dir)
     render_dir.mkdir(parents=True, exist_ok=True)
 
-    # IMPORTANT: load the .blend FIRST, then the text block (so Blender can find it)
     args = [str(blender_exe), "-b", str(blend_path)]
     if run_script and script_name.strip():
         args += ["--enable-autoexec", "--python-text", script_name.strip()]
@@ -243,7 +246,7 @@ def render_chunk(
                 if log_cb:
                     log_cb("[STOP] Immediate stop requested. Killing Blender…\n")
                 terminate_proc_tree(proc, log_cb)
-                return  # exit immediately, no progress push
+                return
 
             line = proc.stdout.readline()
             if not line and proc.poll() is not None:
@@ -276,7 +279,7 @@ def render_chunk(
 
 
 # =========================
-# Worker thread (renders only missing frames)
+# Worker thread
 # =========================
 
 class RenderWorker(threading.Thread):
@@ -303,7 +306,6 @@ class RenderWorker(threading.Thread):
         self.progress_queue.put((str(current_file), scene_start, scene_end, current_frame))
 
     def stop_immediately(self):
-        """External request to stop now: kill active proc and set stop flag."""
         self.stop_flag.set()
         proc = self.current_proc_holder.get("proc")
         if proc:
@@ -326,7 +328,6 @@ class RenderWorker(threading.Thread):
                 self.log(f"\n=== {blend_path.name} ===")
                 self.log(f"Output: {render_dir}")
 
-                # Scene frame range
                 try:
                     s_start, s_end = get_blend_frame_range(self.blender_exe, blend_path)
                 except Exception as e:
@@ -336,7 +337,6 @@ class RenderWorker(threading.Thread):
                 self.set_progress(blend_path.name, s_start, s_end, s_start)
                 self.log(f"Scene frames: {s_start}..{s_end}")
 
-                # Determine missing frames
                 existing = get_existing_frames(render_dir)
                 all_frames = list(range(s_start, s_end + 1))
                 missing_frames = [f for f in all_frames if f not in existing]
@@ -351,14 +351,11 @@ class RenderWorker(threading.Thread):
                 self.log(f"Missing frames: {len(missing_frames)}")
                 self.log(f"Ranges: {format_ranges(ranges)}")
 
-                # Split ranges by chunk size
                 chunked_ranges = list(split_ranges_by_chunk(ranges, self.chunk_size))
                 self.log(f"Planned chunks: {format_ranges(chunked_ranges, max_show=20)}")
 
-                # Start progress at first missing frame
                 self.set_progress(blend_path.name, s_start, s_end, missing_frames[0])
 
-                # Render each chunk of missing frames
                 for (a, b) in chunked_ranges:
                     if self.stop_flag.is_set():
                         self.log("[STOP] Stop requested. Halting mid-file.")
@@ -392,7 +389,6 @@ class RenderWorker(threading.Thread):
                         self.log("[STOP] Halting immediately after chunk stop.")
                         break
 
-                    # Only mark the chunk end as done if it completed normally
                     self.set_progress(blend_path.name, s_start, s_end, b)
 
                 if self.stop_flag.is_set():
@@ -410,11 +406,10 @@ class RenderWorker(threading.Thread):
 
 
 # =========================
-# Tkinter GUI (with optional DnD)
+# Tkinter GUI (DnD via tkinterdnd2)
 # =========================
 
-# IMPORTANT: always subclass tk.Tk (safer). Enable DnD at runtime if available.
-class App(tk.Tk):
+class App(BaseTk):
     def __init__(self):
         super().__init__()
         self.title("Blender render")
@@ -430,34 +425,28 @@ class App(tk.Tk):
         self._shutdown_scheduled = False
         self._save_job = None
 
-        # Close handler: stop worker and kill Blender
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
-        # Top controls
         frm = ttk.Frame(self, padding=12)
         frm.pack(fill="both", expand=True)
 
-        # Blender exe (prefilled)
         ttk.Label(frm, text="Blender executable").grid(row=0, column=0, sticky="w")
         self.blender_var = tk.StringVar(value=find_default_blender())
         self.blender_entry = ttk.Entry(frm, textvariable=self.blender_var, width=80)
         self.blender_entry.grid(row=0, column=1, sticky="we", padx=8)
         ttk.Button(frm, text="Browse…", command=self.pick_blender).grid(row=0, column=2, sticky="w")
 
-        # Output root
         ttk.Label(frm, text="Output root").grid(row=1, column=0, sticky="w")
         self.out_var = tk.StringVar(value="G:\\RENDERSC" if os.name == "nt" else str((Path.cwd()/ "RENDERSC").resolve()))
         self.out_entry = ttk.Entry(frm, textvariable=self.out_var, width=80)
         self.out_entry.grid(row=1, column=1, sticky="we", padx=8)
         ttk.Button(frm, text="Browse…", command=self.pick_out_root).grid(row=1, column=2, sticky="w")
 
-        # Chunk size
         ttk.Label(frm, text="Chunk size").grid(row=2, column=0, sticky="w")
         self.chunk_var = tk.StringVar(value="100")
         self.chunk_entry = ttk.Entry(frm, textvariable=self.chunk_var, width=10)
         self.chunk_entry.grid(row=2, column=1, sticky="w", padx=8)
 
-        # Run script (optional)
         self.run_script_var = tk.BooleanVar(value=True)
         self.script_name_var = tk.StringVar(value="lightningsync")
 
@@ -469,13 +458,11 @@ class App(tk.Tk):
         self.script_entry = ttk.Entry(run_frame, textvariable=self.script_name_var, width=24)
         self.script_entry.pack(side="left")
 
-        # Shutdown after finish (checkbox)
         self.shutdown_var = tk.BooleanVar(value=False)
         self.shutdown_chk = ttk.Checkbutton(frm, text="Shut down computer when all files finish (60s warning)",
                                             variable=self.shutdown_var)
         self.shutdown_chk.grid(row=4, column=0, columnspan=3, sticky="w", pady=(8, 4))
 
-        # Files list + buttons
         files_bar = ttk.Frame(frm)
         files_bar.grid(row=5, column=0, columnspan=3, sticky="we", pady=(10, 4))
         ttk.Button(files_bar, text="Add Files…", command=self.add_files).pack(side="left")
@@ -487,30 +474,33 @@ class App(tk.Tk):
         frm.rowconfigure(6, weight=1)
         frm.columnconfigure(1, weight=1)
 
-        # Enable DnD on listbox (and whole window) if available
+        # ----- DnD status line
+        self._dnd_status = tk.StringVar(value="")
+
         if DND_AVAILABLE:
             try:
-                # Use TkinterDnD hooks against a tk.Tk root is fine; if tkdnd not found at runtime,
-                # this block may still throw — so keep it guarded.
+                ver = self.tk.call('package', 'require', 'tkdnd')
+                # Register drop targets with tkinterdnd2 helpers
                 self.listbox.drop_target_register(DND_FILES)
                 self.listbox.dnd_bind('<<Drop>>', self.on_drop)
-                # Make the whole root also accept drops
+
                 try:
-                    # Only available when the mixin is properly installed
                     self.drop_target_register(DND_FILES)
                     self.dnd_bind('<<Drop>>', self.on_drop)
                 except Exception:
                     pass
-            except Exception as e:
-                print("[WARN] tkdnd unavailable at runtime:", e)
 
-        # Start/Stop
+                self._dnd_status.set(f"Drag & drop ready (tkdnd {ver}; TKDND_LIBRARY={os.environ.get('TKDND_LIBRARY','?')})")
+            except Exception as e:
+                self._dnd_status.set(f"Drag & drop not available: {e}")
+        else:
+            self._dnd_status.set("Drag & drop disabled (tkinterdnd2 not installed)")
+
         bar = ttk.Frame(frm)
         bar.grid(row=7, column=0, columnspan=3, sticky="we", pady=(10, 4))
         ttk.Button(bar, text="Start", command=self.start_render).pack(side="left")
         ttk.Button(bar, text="Stop", command=self.stop_render).pack(side="left", padx=6)
 
-        # Progress
         self.current_label = ttk.Label(frm, text="Now Rendering: -")
         self.current_label.grid(row=8, column=0, columnspan=3, sticky="w", pady=(10, 2))
 
@@ -519,25 +509,20 @@ class App(tk.Tk):
         self.frame_label = ttk.Label(frm, text="- / -")
         self.frame_label.grid(row=10, column=0, columnspan=3, sticky="w")
 
-        # Log
         self.log = tk.Text(frm, height=12)
         self.log.grid(row=11, column=0, columnspan=3, sticky="nsew", pady=(10,0))
         frm.rowconfigure(11, weight=1)
 
-        # Status line re: DnD
-        status = ttk.Label(frm, text=(""), foreground=("#10b981" if DND_AVAILABLE else "#b45309"))
+        status = ttk.Label(frm, textvariable=self._dnd_status)
         status.grid(row=12, column=0, columnspan=3, sticky="w", pady=(6,0))
 
-        # Load persisted settings and set UI
         self.load_settings()
         self.toggle_script_field()
 
-        # Debounced auto-save on changes
         for var in (self.blender_var, self.out_var, self.chunk_var,
                     self.run_script_var, self.script_name_var, self.shutdown_var):
             var.trace_add("write", lambda *args: self._schedule_save())
 
-        # Poll queues
         self.after(100, self.drain_queues)
 
     # -------- Settings persistence --------
@@ -623,7 +608,6 @@ class App(tk.Tk):
     # ------------- DnD helpers -------------
     @staticmethod
     def _parse_dropped_paths(data: str):
-        """Convert a DND_FILES string to a list of absolute paths."""
         paths = []
         token = ""
         in_brace = False
@@ -769,7 +753,6 @@ class App(tk.Tk):
         else:
             self.log_insert("Nothing is running.\n")
 
-    # ----- Non-blocking shutdown countdown -----
     def schedule_shutdown(self, seconds=60):
         if self._shutdown_scheduled:
             return
@@ -780,7 +763,7 @@ class App(tk.Tk):
         top.attributes("-topmost", True)
         top.geometry("420x140")
         top.resizable(False, False)
-        top.protocol("WM_DELETE_WINDOW", lambda: None)  # prevent closing
+        top.protocol("WM_DELETE_WINDOW", lambda: None)
 
         msg = ttk.Label(top, text="Rendering finished. The computer will shut down automatically.",
                         wraplength=400, justify="center")
@@ -790,7 +773,6 @@ class App(tk.Tk):
         lbl = ttk.Label(top, textvariable=countdown_var, font=("TkDefaultFont", 12))
         lbl.pack()
 
-        # Center popup relative to main
         try:
             self.update_idletasks()
             x = self.winfo_rootx() + (self.winfo_width() - 420) // 2
@@ -812,9 +794,7 @@ class App(tk.Tk):
 
         tick(int(seconds))
 
-    # ------------- Queue draining -------------
     def drain_queues(self):
-        # Logs
         try:
             while True:
                 msg = self.log_queue.get_nowait()
@@ -822,7 +802,6 @@ class App(tk.Tk):
         except queue.Empty:
             pass
 
-        # Progress tuples: (file, s_start, s_end, cur)
         try:
             while True:
                 current_file, s_start, s_end, cur = self.progress_queue.get_nowait()
@@ -835,11 +814,10 @@ class App(tk.Tk):
         except queue.Empty:
             pass
 
-        # Detect completion: schedule non-blocking shutdown if enabled
         if self.worker and not self.worker.is_alive() and not self._finish_handled:
             self._finish_handled = True
             if getattr(self.worker, "finished_naturally", False) and self.shutdown_var.get():
-                self.schedule_shutdown(seconds=60)  # adjust default if needed
+                self.schedule_shutdown(seconds=60)
 
         self.after(100, self.drain_queues)
 
