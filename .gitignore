@@ -1,3 +1,11 @@
+# PyInstaller
+.blender_render_gui.json
+/build/
+/dist/
+*.spec
+venv/
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
