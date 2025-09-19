@@ -424,6 +424,7 @@ class App(BaseTk):
         self._finish_handled = False
         self._shutdown_scheduled = False
         self._save_job = None
+        self.render_start_time = None  # NEW
 
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -507,7 +508,11 @@ class App(BaseTk):
         self.progress = ttk.Progressbar(frm, orient="horizontal", length=400, mode="determinate")
         self.progress.grid(row=9, column=0, columnspan=3, sticky="we")
         self.frame_label = ttk.Label(frm, text="- / -")
-        self.frame_label.grid(row=10, column=0, columnspan=3, sticky="w")
+        self.frame_label.grid(row=10, column=0, columnspan=2, sticky="w")
+
+        # --- NEW time label ---
+        self.time_label = ttk.Label(frm, text="Elapsed: 00:00:00 | Remaining: --:--:--")
+        self.time_label.grid(row=10, column=2, sticky="e")
 
         self.log = tk.Text(frm, height=12)
         self.log.grid(row=11, column=0, columnspan=3, sticky="nsew", pady=(10,0))
@@ -727,7 +732,9 @@ class App(BaseTk):
         self.current_label.config(text="Now Rendering: -")
         self.progress.config(value=0, maximum=100)
         self.frame_label.config(text="- / -")
+        self.time_label.config(text="Elapsed: 00:00:00 | Remaining: --:--:--")  # reset
         self.log.delete(1.0, tk.END)
+        self.render_start_time = time.time()  # NEW
 
         self.worker = RenderWorker(
             blender_exe=blender_exe,
@@ -809,8 +816,24 @@ class App(BaseTk):
                 self.frame_label.config(text=f"{cur} / {s_end}")
                 total = max(1, s_end - s_start + 1)
                 done = max(0, min(total, (cur - s_start + 1)))
-                pct = int(done * 100 / total)
-                self.progress.config(value=pct, maximum=100)
+                pct = done / total
+                self.progress.config(value=int(pct * 100), maximum=100)
+
+                # --- elapsed / remaining ---
+                elapsed = time.time() - (self.render_start_time or time.time())
+                if pct > 0:
+                    remaining = elapsed * (1 - pct) / pct
+                else:
+                    remaining = 0
+
+                def fmt(sec):
+                    h, rem = divmod(int(sec), 3600)
+                    m, s = divmod(rem, 60)
+                    return f"{h:02}:{m:02}:{s:02}"
+
+                self.time_label.config(
+                    text=f"Elapsed: {fmt(elapsed)} | Remaining: {fmt(remaining) if pct>0 else '--:--:--'}"
+                )
         except queue.Empty:
             pass
 

@@ -1,9 +1,5 @@
 @echo off
-REM ===== Simple one-file build for Windows with PyInstaller =====
-REM Requirements:
-REM   pip install pyinstaller
-REM Optional:
-REM   put an ICO at .\icon.ico (or change path below)
+REM ===== One-file build for Windows with PyInstaller (tkdnd robust) =====
 
 set SCRIPT=blender_render_gui.py
 set ICON=icon.ico
@@ -19,23 +15,39 @@ echo Installing requirements...
 pip install --upgrade pip
 pip install pyinstaller tkinterdnd2
 
-REM --- Locate tkinterdnd2\tkdnd so we can bundle it ---
-for /f "usebackq delims=" %%D in (`python -c "import os, tkinterdnd2; print(os.path.join(os.path.dirname(tkinterdnd2.__file__), 'tkdnd'))"`) do set TKDND_SRC=%%D
+REM ---- Find a tkdnd folder that actually has pkgIndex.tcl ----
+for /f "usebackq delims=" %%D in (`
+  python -c "import os,site,sys,glob; 
+try:
+    import tkinterdnd2
+    cand=[os.path.join(os.path.dirname(tkinterdnd2.__file__),'tkdnd')]
+except Exception:
+    cand=[];
+paths=set(site.getsitepackages()+[site.getusersitepackages()]);
+cp=os.environ.get('CONDA_PREFIX');
+if cp: paths.add(os.path.join(cp,'Lib','site-packages'));
+# also try the common Anaconda system location
+paths.add(r'C:\ProgramData\anaconda3\Lib\site-packages');
+cands=cand+[os.path.join(p,'tkinterdnd2','tkdnd') for p in paths];
+for p in cands:
+    if os.path.isdir(p) and os.path.isfile(os.path.join(p,'pkgIndex.tcl')):
+        print(p); sys.exit(0)
+print(''); sys.exit(1)"
+`) do set "TKDND_SRC=%%D"
 
-if not exist "%TKDND_SRC%" (
-  echo [ERROR] Could not find tkdnd folder inside tkinterdnd2.
-  echo         Looked at: %TKDND_SRC%
-  echo         Make sure 'pip install tkinterdnd2' succeeded in this venv.
+if "%TKDND_SRC%"=="" (
+  echo [ERROR] Could not locate a valid tkdnd folder with pkgIndex.tcl.
+  echo         Ensure tkinterdnd2 is installed somewhere that includes the native tkdnd.
   exit /b 1
 )
 
-echo tkdnd folder: "%TKDND_SRC%"
+echo Using tkdnd from: "%TKDND_SRC%"
 
-REM On Windows, --add-data uses a semicolon:  src;dest_in_bundle
-set TKDND_ADD=--add-data "%TKDND_SRC%;tkdnd"
+REM Windows uses semicolon in --add-data
+set "TKDND_ADD=--add-data=%TKDND_SRC%;tkdnd"
 
 if exist "%ICON%" (
-  set ICON_ARG=--icon "%ICON%"
+  set "ICON_ARG=--icon=%ICON%"
 ) else (
   echo [WARN] icon.ico not found, building without custom icon.
   set ICON_ARG=
@@ -53,6 +65,7 @@ pyinstaller --noconfirm ^
   %ICON_ARG% ^
   %TKDND_ADD% ^
   --hidden-import tkinterdnd2 ^
+  --collect-all tkinterdnd2 ^
   --name "%NAME%" ^
   "%SCRIPT%"
 
