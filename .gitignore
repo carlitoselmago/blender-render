@@ -1,4 +1,5 @@
 # PyInstaller
+RENDERSC/
 .blender_render_gui.json
 /build/
 /dist/
