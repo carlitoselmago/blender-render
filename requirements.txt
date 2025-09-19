@@ -1,3 +1,2 @@
-#conda install tk
-tkinterdnd2
-pyinstaller
+flet
+flet-dropzone
