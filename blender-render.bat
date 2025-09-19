@@ -1,3 +1,4 @@
-python -m venv .venv
-.venv\Scripts\activate
+call activate base
+
+
 python main.py

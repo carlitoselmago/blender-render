@@ -202,7 +202,6 @@ def main(page: ft.Page):
     page.title = "Blender Render (Flet Desktop)"
     page.scroll = "auto"
     page.window.height = 730
-    page.update()
 
     # ---------- Load settings ----------
     def load_settings():
@@ -226,7 +225,7 @@ def main(page: ft.Page):
             with open(CONFIG_PATH, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
         except Exception as e:
-            log_fn(f"[WARN] Could not save settings: {e}")
+            print(f"[WARN] Could not save settings: {e}")
 
     settings = load_settings()
 
@@ -275,42 +274,88 @@ def main(page: ft.Page):
     scene_start = [None]
     scene_end = [None]
 
-    # ---------------- Logging ----------------
+    # --- For better time estimates (session-based) ---
+    existing_set_current = set()      # frames that existed before we started
+    missing_set_current = set()       # frames we actually need to render this run
+    rendered_now = set()              # frames completed during THIS run only
+    total_to_render = [0]             # len(missing_set_current)
+
+    # ---------------- Log buffer ----------------
+    log_buffer = []
+
     def log_fn(msg):
-        page.run_thread(lambda: log_box.controls.append(ft.Text(msg)))
-        page.run_thread(page.update)
+        log_buffer.append(msg)
+
+    def flush_logs():
+        while True:
+            if log_buffer:
+                lines = list(log_buffer)
+                log_buffer.clear()
+                page.run_thread(lambda: log_box.controls.extend(ft.Text(line) for line in lines))
+                page.run_thread(page.update)
+            time.sleep(0.2)  # flush every 200 ms
+
+    threading.Thread(target=flush_logs, daemon=True).start()
 
     # ---------------- Grid init ----------------
     def grid_cb(start, end, existing):
+        nonlocal existing_set_current, missing_set_current
         frame_squares.clear()
         grid.controls.clear()
         scene_start[0], scene_end[0] = start, end
+
+        existing_set_current = set(existing)
+        full = set(range(start, end + 1))
+        missing_set_current = full - existing_set_current
+        rendered_now.clear()
+        total_to_render[0] = len(missing_set_current)
+
+        # draw grid (existing in green, missing in grey)
         for f in range(start, end+1):
-            sq = ft.Container(width=12, height=12,
-                              bgcolor=ft.Colors.GREEN if f in existing else ft.Colors.GREY_300,
-                              border=ft.border.all(1, ft.Colors.BLACK),
-                              data=f)
+            sq = ft.Container(
+                width=12,
+                height=12,
+                bgcolor=ft.Colors.GREEN if f in existing_set_current else ft.Colors.GREY_300,
+                border=ft.border.all(1, ft.Colors.BLACK),
+                data=f
+            )
             frame_squares.append(sq)
             grid.controls.append(sq)
+
         page.update()
         start_time[0] = time.time()
 
     # ---------------- Progress ----------------
     def progress_cb(f):
+        # mark square
+        if scene_start[0] is None:
+            return
         idx = f - scene_start[0]
         if 0 <= idx < len(frame_squares):
             frame_squares[idx].bgcolor = ft.Colors.GREEN
             frame_squares[idx].update()
-        done = sum(1 for sq in frame_squares if sq.bgcolor == ft.Colors.GREEN)
-        total = len(frame_squares)
-        pct = done / total if total else 0
+
+        # count only frames we render in THIS session
+        if f in missing_set_current:
+            rendered_now.add(f)
+
+        # time estimates based on session-only frames
         elapsed = time.time() - (start_time[0] or time.time())
-        remaining = elapsed * (1 - pct) / pct if pct > 0 else 0
+        done_now = len(rendered_now)
+        remain_frames = max(0, total_to_render[0] - done_now)
+
+        if done_now > 0:
+            avg_per_frame = elapsed / done_now
+            remaining = avg_per_frame * remain_frames
+        else:
+            remaining = 0
+
         def fmt(sec):
             h, rem = divmod(int(sec), 3600)
             m, s = divmod(rem, 60)
             return f"{h:02}:{m:02}:{s:02}"
-        elapsed_label.value = f"Elapsed: {fmt(elapsed)} | Remaining: {fmt(remaining) if pct>0 else '--:--:--'}"
+
+        elapsed_label.value = f"Elapsed: {fmt(elapsed)} | Remaining: {fmt(remaining) if done_now>0 else '--:--:--'}"
         elapsed_label.update()
 
     # ---------------- File pickers ----------------
