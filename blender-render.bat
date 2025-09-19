@@ -1,2 +1,3 @@
-call conda activate base
-python blender_render_gui.py
+python -m venv .venv
+.venv\Scripts\activate
+python main.py

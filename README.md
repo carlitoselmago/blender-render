@@ -6,11 +6,10 @@ A simple python script with GUI with drag and drop that processes blender files 
 - It can run scripts on starting the blender file
 
 ## Installation
-Create a conda env
+
 run:
 ```
-conda install tk
-pip install tkinterdnd2
+flet build windows -v
 ```
 
 There's a blender-render.bat file for windows, adjust to your conda env name, (default "base")
