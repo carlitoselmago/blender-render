@@ -1,4 +1,6 @@
 # PyInstaller
+client/jobs
+client/.blender_render_client.json
 RENDERSC/
 .blender_render_gui.json
 /build/
