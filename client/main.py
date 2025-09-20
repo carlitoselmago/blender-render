@@ -247,16 +247,57 @@ def main(page: ft.Page):
         on_change=lambda e: save_settings_val("blender_exe", blender_path.value.strip()),
     )
 
-    log_view = ft.ListView(expand=1, spacing=2, height=150, auto_scroll=True)
-    MAX_LOG = 400
+    # bigger log area
+    log_view = ft.ListView(expand=1, spacing=2, height=400, auto_scroll=True)
+    MAX_LOG = 1000
+
+    LOG_FILE = Path("client_log.txt")
+    log_lines = []
 
     def log_fn(msg):
-        log_view.controls.append(ft.Text(msg))
+        timestamped = f"{time.strftime('%H:%M:%S')} {msg}"
+        log_lines.append(timestamped)
+        # UI line: make text selectable
+        log_view.controls.append(ft.Text(timestamped, selectable=True, size=12))
+        # keep memory reasonable
         if len(log_view.controls) > MAX_LOG:
             del log_view.controls[0:len(log_view.controls)-MAX_LOG]
         page.update()
+        # also append to file
+        try:
+            with LOG_FILE.open("a", encoding="utf-8") as f:
+                f.write(timestamped + "\n")
+        except Exception:
+            pass
 
-    page.add(ft.Column([blender_path, ft.Text("Log:"), log_view]))
+    def open_log_file(e):
+        try:
+            os.startfile(LOG_FILE)  # Windows
+        except Exception as _:
+            pass
+
+    def copy_log_to_clipboard(e):
+        try:
+            page.set_clipboard("\n".join(log_lines))
+            page.snack_bar = ft.SnackBar(ft.Text("Log copied to clipboard"))
+            page.snack_bar.open = True
+            page.update()
+        except Exception:
+            pass
+
+    page.add(
+        ft.Column(
+            [
+                blender_path,
+                ft.Row([ft.ElevatedButton("Open Log File", on_click=open_log_file),
+                        ft.ElevatedButton("Copy Log", on_click=copy_log_to_clipboard)]),
+                ft.Text("Log:"),
+                log_view,
+            ],
+            expand=True
+        )
+    )
+
 
     # Start discovery + job server
     start_client_discovery()

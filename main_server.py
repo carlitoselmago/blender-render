@@ -423,8 +423,8 @@ def main(page: ft.Page):
     )
 
     # File list + drop
-    file_list = ft.ListView(expand=1, height=120, spacing=5)
-    log_box = ft.ListView(expand=1, spacing=2, height=200, auto_scroll=True)
+    file_list = ft.ListView(expand=1, height=520, spacing=5)
+    log_box = ft.ListView(expand=1, spacing=2, height=800, auto_scroll=True)
     elapsed_label = ft.Text("Elapsed: 00:00:00 | Remaining: --:--:--")
 
     # Grid
