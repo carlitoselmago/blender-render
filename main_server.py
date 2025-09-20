@@ -24,6 +24,18 @@ UPLOAD_PORT = 50020  # main's server to receive frames from clients
 # Utils
 # =========================
 
+def get_local_ip():
+    """Return the LAN IP of this machine (not 127.0.0.1)."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return socket.gethostbyname(socket.gethostname())
+
+
 def find_default_blender():
     for cand in ("blender", "blender.exe"):
         p = shutil.which(cand)
@@ -310,7 +322,8 @@ def discover_once(page, clients_box):
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
     sock.settimeout(1)
     try:
-        sock.sendto(DISCOVERY_MAGIC, ("255.255.255.255", DISCOVERY_PORT))
+        #TODO: make the ip range smart and check all connected ip ranges, but avoid 255.255.255.255 cose it didn't work
+        sock.sendto(DISCOVERY_MAGIC, ("192.168.100.255", DISCOVERY_PORT))
         while True:
             data, addr = sock.recvfrom(1024)
             msg = data.decode().split("|")
@@ -590,6 +603,8 @@ def main(page: ft.Page):
 
     # ---------------- DISTRIBUTED Start Render ----------------
     def start_render(e):
+        nonlocal missing_set_current, rendered_now, total_to_render, start_time
+
         # Use the FIRST .blend in the list for now (you can extend later)
         if not file_list.controls:
             log_fn("No files selected.")
@@ -613,7 +628,7 @@ def main(page: ft.Page):
         page.run_thread(lambda: grid_cb(s_start, s_end, existing))
 
         # Missing frames
-        all_frames = list(range(s_start, s_end+1))
+        all_frames = list(range(s_start, s_end + 1))
         missing = [f for f in all_frames if f not in existing]
         if not missing:
             log_fn("[INFO] No missing frames.")
@@ -629,12 +644,13 @@ def main(page: ft.Page):
 
         # Choose workers: main + active clients; assign round-robin so main starts from earliest frames
         active_clients = [(ip, info) for ip, info in clients.items() if info.get("selected")]
-        workers = [("local", None)] + [("client", (ip, info)) for ip, info in active_clients]
+        workers = [("local", None)] + [("client", ip) for ip, _ in active_clients]
 
         # Partition chunks
         assignments = {("local", None): []}
-        for ip, info in active_clients:
-            assignments[("client", (ip, info))] = []
+        for ip, _ in active_clients:
+            assignments[("client", ip)] = []
+
         for i, ch in enumerate(chunks):
             w = workers[i % len(workers)]
             assignments[w].append(ch)
@@ -687,7 +703,8 @@ def main(page: ft.Page):
         for (kind, payload), cl_chunks in assignments.items():
             if kind != "client":
                 continue
-            (ip, info) = payload
+            ip = payload
+            info = clients[ip]
             if not cl_chunks:
                 continue
             # Merge this client's chunks into a single (start,end) to reduce launches
@@ -700,7 +717,7 @@ def main(page: ft.Page):
                 "dependencies": dep_remote_list,
                 "start": a,
                 "end": b,
-                "upload_host": socket.gethostbyname(socket.gethostname()),
+                "upload_host": get_local_ip(),  # safer than gethostname()
                 "upload_port": UPLOAD_PORT,
                 "run_script": bool(run_script.value),
                 "script_name": script_name.value.strip(),
@@ -714,6 +731,7 @@ def main(page: ft.Page):
             log_fn(f"[MAIN] Assigned {len(cl_chunks)} chunk(s) to {ip}")
 
         log_fn("[MAIN] Distribution complete. Rendering in progress…")
+
 
     def stop_render(e):
         if local_worker[0] and local_worker[0].is_alive():

@@ -29,8 +29,13 @@ def recv_exact(conn, n):
 
 def send_frame(upload_host, upload_port, img_path: Path, log_fn):
     try:
+        log_fn(f"[CLIENT] Preparing to upload {img_path} ({img_path.stat().st_size} bytes) "
+               f"to {upload_host}:{upload_port}")
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(10)
         sock.connect((upload_host, upload_port))
+        log_fn(f"[CLIENT] Connected to {upload_host}:{upload_port}")
+
         # frame number from filename
         m = re.search(r'(\d+)$', img_path.stem)
         frame_num = int(m.group(1)) if m else -1
@@ -38,18 +43,22 @@ def send_frame(upload_host, upload_port, img_path: Path, log_fn):
         hdr = json.dumps(header).encode("utf-8")
         sock.sendall(struct.pack("!I", len(hdr)))
         sock.sendall(hdr)
+
         size = img_path.stat().st_size
         sock.sendall(struct.pack("!Q", size))
+
         with open(img_path, "rb") as f:
             while True:
                 chunk = f.read(4096)
                 if not chunk:
                     break
                 sock.sendall(chunk)
+
         sock.close()
         log_fn(f"[CLIENT] Uploaded {img_path.name} to {upload_host}:{upload_port}")
     except Exception as e:
-        log_fn(f"[CLIENT] Upload error: {e}")
+        log_fn(f"[CLIENT] Upload error to {upload_host}:{upload_port}: {e}")
+
 
 # =========================
 # Job server (TCP)
@@ -159,20 +168,20 @@ def start_job_server(get_blender_exe, log_fn):
                     log_fn(line)
                     m = saved_re.search(line)
                     if m:
-                        # Try to infer last saved file in frames_dir
-                        # (Blender usually prints "Saved: '.../0001.png'")
                         try:
-                            # upload every file present (simple approach)
                             saved_paths = sorted(frames_dir.iterdir())
                             if saved_paths:
-                                send_frame(upload_host, upload_port, saved_paths[-1], log_fn)
+                                last_img = saved_paths[-1]
+                                log_fn(f"[CLIENT] Detected saved frame {last_img}, attempting upload...")
+                                send_frame(upload_host, upload_port, last_img, log_fn)
                         except Exception as _e:
-                            pass
+                            log_fn(f"[CLIENT] Exception during auto-upload: {_e}")
                 code = proc.wait()
                 log_fn(f"[CLIENT] Blender exited with {code}")
 
                 # Upload any files not uploaded (safety)
                 for img in sorted(frames_dir.iterdir()):
+                    log_fn(f"[CLIENT] Safety re-upload for {img}")
                     send_frame(upload_host, upload_port, img, log_fn)
 
             except Exception as e:
