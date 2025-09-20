@@ -6,10 +6,26 @@ A simple python script with GUI with drag and drop that processes blender files 
 - It can run scripts on starting the blender file
 
 ## Installation
+run:
+```
+python -m venv .venv
+.venv\Scripts\activate.bat #(source .venv/bin/activate)
+pip install -r requirements.txt
 
+python main.py
+```
+
+The drop zone plugin requires that you build the app for desktop once first
+
+## Build
 run:
 ```
 flet build windows -v
+```
+
+Note: if you encounter problems building because android incompatibilities, modify the file build/flutter/pubspec.yaml to this:
+```
+webview_flutter_android: ^3.8.0
 ```
 
 There's a blender-render.bat file for windows, adjust to your conda env name, (default "base")
