@@ -275,13 +275,14 @@ def main(page: ft.Page):
     scene_end = [None]
 
     # --- For better time estimates (session-based) ---
-    existing_set_current = set()      # frames that existed before we started
-    missing_set_current = set()       # frames we actually need to render this run
-    rendered_now = set()              # frames completed during THIS run only
-    total_to_render = [0]             # len(missing_set_current)
+    existing_set_current = set()
+    missing_set_current = set()
+    rendered_now = set()
+    total_to_render = [0]
 
     # ---------------- Log buffer ----------------
     log_buffer = []
+    MAX_LOG_LINES = 500   # <-- only keep last 500 lines in UI
 
     def log_fn(msg):
         log_buffer.append(msg)
@@ -291,9 +292,15 @@ def main(page: ft.Page):
             if log_buffer:
                 lines = list(log_buffer)
                 log_buffer.clear()
-                page.run_thread(lambda: log_box.controls.extend(ft.Text(line) for line in lines))
+                # append new lines
+                for line in lines:
+                    log_box.controls.append(ft.Text(line))
+                # trim if too long
+                if len(log_box.controls) > MAX_LOG_LINES:
+                    excess = len(log_box.controls) - MAX_LOG_LINES
+                    del log_box.controls[0:excess]
                 page.run_thread(page.update)
-            time.sleep(0.2)  # flush every 200 ms
+            time.sleep(0.2)
 
     threading.Thread(target=flush_logs, daemon=True).start()
 
@@ -327,7 +334,6 @@ def main(page: ft.Page):
 
     # ---------------- Progress ----------------
     def progress_cb(f):
-        # mark square
         if scene_start[0] is None:
             return
         idx = f - scene_start[0]
@@ -335,11 +341,9 @@ def main(page: ft.Page):
             frame_squares[idx].bgcolor = ft.Colors.GREEN
             frame_squares[idx].update()
 
-        # count only frames we render in THIS session
         if f in missing_set_current:
             rendered_now.add(f)
 
-        # time estimates based on session-only frames
         elapsed = time.time() - (start_time[0] or time.time())
         done_now = len(rendered_now)
         remain_frames = max(0, total_to_render[0] - done_now)
